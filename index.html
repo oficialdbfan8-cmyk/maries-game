@@ -1,0 +1,650 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Marie's Enchanted Adventure</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#07131b;font-family:system-ui,-apple-system,Segoe UI,sans-serif}
+  body{display:grid;place-items:center}
+  #wrap{position:relative;width:min(100vw,1280px);height:min(100vh,720px);aspect-ratio:16/9;overflow:hidden;background:#0b1720}
+  canvas{width:100%;height:100%;display:block;image-rendering:auto}
+  #touch{position:absolute;inset:auto 0 0 0;height:125px;display:none;pointer-events:none}
+  .touchBtn{pointer-events:auto;position:absolute;bottom:22px;width:74px;height:74px;border-radius:22px;border:1px solid #ffffff35;background:#0c1d2acc;color:white;font-size:30px;backdrop-filter:blur(8px)}
+  #left{left:22px} #right{left:108px} #jump{right:108px} #dash{right:22px}
+  @media (pointer:coarse){#touch{display:block}}
+</style>
+</head>
+<body>
+<div id="wrap">
+<canvas id="game" width="1280" height="720"></canvas>
+<div id="touch">
+  <button class="touchBtn" id="left">◀</button>
+  <button class="touchBtn" id="right">▶</button>
+  <button class="touchBtn" id="jump">↑</button>
+  <button class="touchBtn" id="dash">✦</button>
+</div>
+</div>
+
+<script>
+"use strict";
+
+/*
+  MARIE'S ENCHANTED ADVENTURE
+  Original canvas platformer. No external libraries.
+  GitHub-friendly: save as index.html and keep audio/theme.mp3 beside it.
+*/
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const W=1280,H=720;
+const TAU=Math.PI*2;
+
+const audio = new Audio("audio/theme.mp3");
+audio.loop=true;
+audio.volume=.32;
+
+const keys = Object.create(null);
+const pressed = Object.create(null);
+addEventListener("keydown", e=>{
+  if(["ArrowLeft","ArrowRight","ArrowUp","Space"].includes(e.code)) e.preventDefault();
+  if(!keys[e.code]) pressed[e.code]=true;
+  keys[e.code]=true;
+  if(e.code==="Enter" && state==="menu") startGame();
+  if(e.code==="Escape" && state==="play") state="pause";
+  else if(e.code==="Escape" && state==="pause") state="play";
+});
+addEventListener("keyup", e=>keys[e.code]=false);
+
+function bindHold(id,code){
+  const b=document.getElementById(id);
+  const on=e=>{e.preventDefault(); if(!keys[code]) pressed[code]=true; keys[code]=true};
+  const off=e=>{e.preventDefault(); keys[code]=false};
+  ["pointerdown","touchstart"].forEach(x=>b.addEventListener(x,on,{passive:false}));
+  ["pointerup","pointercancel","pointerleave","touchend"].forEach(x=>b.addEventListener(x,off,{passive:false}));
+}
+bindHold("left","ArrowLeft"); bindHold("right","ArrowRight"); bindHold("jump","Space"); bindHold("dash","ShiftLeft");
+
+const worlds=[
+ {name:"Whispering Grove", subtitle:"Where the fireflies first appear", sky:["#102f3b","#2b665a"], ground:"#315642", top:"#77a35e", accent:"#d9ff9d", mist:"#9fe8ca"},
+ {name:"Moonlit Canopy", subtitle:"Follow the silver leaves", sky:["#111a3b","#394d76"], ground:"#263b4d", top:"#7996a8", accent:"#bcd7ff", mist:"#aab7ff"},
+ {name:"Sunroot Valley", subtitle:"Warm light hides old ruins", sky:["#4a2444","#d26f55"], ground:"#5b4539", top:"#c7a46b", accent:"#ffe3a1", mist:"#ffc58d"},
+ {name:"Frostglass Peaks", subtitle:"The wind carries a frozen song", sky:["#193b54","#7eb6ca"], ground:"#41596b", top:"#c9eef2", accent:"#eaffff", mist:"#d9fbff"},
+ {name:"Mosslight Marsh", subtitle:"Watch the water beneath the reeds", sky:["#123b38","#47785c"], ground:"#304c42", top:"#83ae71", accent:"#b8ffbf", mist:"#8de6bd"},
+ {name:"Emberwild", subtitle:"Roots glow under volcanic stone", sky:["#341d26","#8b493c"], ground:"#513530", top:"#9c6b4b", accent:"#ffd18a", mist:"#ffad75"},
+ {name:"Starflower Fields", subtitle:"The forest opens into a living sky", sky:["#19264b","#6b5a98"], ground:"#413f61", top:"#9b8bc0", accent:"#f4d6ff", mist:"#cbb9ff"},
+ {name:"Crystal Coast", subtitle:"The tide reflects another world", sky:["#12354b","#3b88a0"], ground:"#31535c", top:"#79b4a6", accent:"#b7fff1", mist:"#8ce8e1"},
+ {name:"Dreaming Highlands", subtitle:"Clouds drift through ancient trees", sky:["#29355b","#9b7b93"], ground:"#504b58", top:"#aaa0a0", accent:"#ffe3f0", mist:"#e9c7e2"},
+ {name:"Marie’s Castle", subtitle:"The path ends where the story began", sky:["#2c1742","#7c477b"], ground:"#51334e", top:"#d49ac3", accent:"#ffd4ed", mist:"#e8b4dc"}
+];
+
+let state="menu", world=0, score=0, lives=3, coins=0;
+let level, player, particles=[], motes=[], camera={x:0,y:0}, shake=0, last=0, accumulator=0;
+let banner={text:"",sub:"",time:0};
+
+const rand=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const lerp=(a,b,t)=>a+(b-a)*t;
+
+function rect(x,y,w,h){return{x,y,w,h}}
+function overlap(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y}
+
+function startGame(){
+  state="play"; world=0; score=0; coins=0; lives=3;
+  loadWorld(0);
+  audio.play().catch(()=>{});
+}
+function loadWorld(i){
+  world=i;
+  level=buildLevel(i);
+  player={
+    x:90,y:430,w:38,h:68,vx:0,vy:0,
+    ground:false,coyote:0,jumpBuffer:0,
+    facing:1,anim:0,inv:0,dash:0,canDash:true,
+    spawnX:90,spawnY:430
+  };
+  camera.x=0; camera.y=0; shake=0;
+  motes=Array.from({length:115},()=>({
+    x:rand(0,level.width), y:rand(25,610), r:rand(.8,2.7), p:rand(0,TAU), speed:rand(.15,.55)
+  }));
+  banner={text:`WORLD ${i+1}`,sub:worlds[i].name,time:2.4};
+}
+function buildLevel(i){
+  const L={width:5200,height:720,platforms:[],hazards:[],coins:[],enemies:[],springs:[],crates:[],checkpoints:[],goal:{x:4960,y:0,w:90,h:620},trees:[],fireflies:[]};
+  const addP=(x,y,w,h,kind="stone")=>L.platforms.push({x,y,w,h,kind});
+  // Continuous ground with intentional pits.
+  let groundY=625;
+  let gaps = i===0 ? [[790,950],[1840,2020],[3010,3160],[4010,4180]]
+                   : [[720,860],[1640,1790],[2760,2940],[3760,3910]];
+  let gx=0;
+  for(const g of gaps){
+    addP(gx,groundY,g[0]-gx,95,"ground"); gx=g[1];
+  }
+  addP(gx,groundY,L.width-gx,95,"ground");
+  // Designed platform route: alternating heights and wider landing zones.
+  const layouts=[
+    [[420,510,210],[680,455,150],[1010,500,220],[1300,425,190],[1540,500,210],[1810,440,170],[2070,510,220],[2380,455,180],[2650,400,220],[2940,490,170],[3230,430,230],[3520,360,170],[3800,470,220],[4110,405,180],[4380,335,240],[4690,465,200]],
+    [[360,520,190],[640,430,190],[960,350,170],[1250,465,240],[1610,395,180],[1880,320,200],[2180,445,180],[2460,355,230],[2800,470,180],[3080,390,210],[3400,300,190],[3690,430,230],[4050,350,190],[4350,290,230],[4690,430,210]],
+    [[390,485,210],[700,385,180],[980,520,180],[1240,420,210],[1580,340,180],[1880,480,210],[2180,370,190],[2490,510,180],[2780,400,230],[3130,330,180],[3430,470,230],[3750,360,190],[4050,300,200],[4380,440,210],[4700,350,200]]
+  ];
+  const arr=layouts[i%3];
+  arr.forEach((p,n)=>addP(p[0],p[1],p[2],24,n%3===0?"moss":"stone"));
+  // Special world-specific platforms
+  if(i===0){
+    addP(1120,285,120,20,"wood"); addP(2250,290,140,20,"wood"); addP(3260,255,130,20,"wood");
+  } else if(i===1){
+    for(let x=1150;x<1450;x+=90)addP(x,280,65,18,"ice");
+  } else if(i===2){
+    addP(1450,250,140,18,"root"); addP(2930,260,160,18,"root");
+  } else {
+    for(let n=0;n<5;n++) addP(1000+n*760,260+(n%2)*55,140,18,"magic");
+  }
+  // Collectibles
+  for(let x=180;x<4860;x+=180){
+    const y=groundY-85-(Math.sin(x*.014+i)*22);
+    L.coins.push({x,y,r:10,t:rand(0,TAU),got:false});
+  }
+  // Put extra coin arcs over gaps and platforms.
+  for(let x=500;x<4700;x+=420) for(let n=0;n<4;n++)
+    L.coins.push({x:x+n*28,y:330-n*10,r:9,t:rand(0,TAU),got:false});
+  // Enemies are calm, readable, and never jitter: smooth patrol.
+  for(let x=600;x<4650;x+=650){
+    L.enemies.push({x,y:groundY-38,w:38,h:38,vx:0,dir:1,speed:42+world*2,phase:rand(0,TAU),alive:true,groundY});
+  }
+  // Springs
+  [1120,2350,3380,4300].forEach((x,n)=>L.springs.push({x,y:groundY-22,w:42,h:22,pulse:0}));
+  // Crates that reward movement, not random shaking.
+  [540,1440,2510,3630].forEach(x=>L.crates.push({x,y:groundY-46,w:44,h:46,hit:false}));
+  // Checkpoints.
+  [1500,3000,4050].forEach(x=>L.checkpoints.push({x,y:groundY-100,active:false}));
+  // Decorative tree silhouettes and foreground trunks.
+  for(let x=130;x<5100;x+=rand(180,300)){
+    L.trees.push({x,y:groundY,h:rand(150,290),s:rand(.8,1.35),p:rand(0,TAU)});
+  }
+  return L;
+}
+
+function spawn(x,y,count=10,kind="dust"){
+  for(let i=0;i<count;i++) particles.push({
+    x,y,vx:rand(-100,100),vy:rand(-130,10),life:rand(.35,.75),max:.75,
+    r:rand(2,5),kind
+  });
+}
+function damage(){
+  if(player.inv>0) return;
+  lives--; shake=.12; spawn(player.x+player.w/2,player.y+player.h/2,16,"hit");
+  if(lives<=0){ state="gameover"; return; }
+  player.x=player.spawnX; player.y=player.spawnY; player.vx=player.vy=0; player.inv=2;
+  camera.x=clamp(player.x-360,0,level.width-W);
+}
+function finish(){
+  if(world<worlds.length-1){ loadWorld(world+1); }
+  else state="win";
+}
+
+function update(dt){
+  if(state!=="play") return;
+  if(banner.time>0) banner.time-=dt;
+  player.inv=Math.max(0,player.inv-dt);
+  player.coyote=player.ground?.12:Math.max(0,player.coyote-dt);
+  player.jumpBuffer=pressed.Space||pressed.ArrowUp ? .12 : Math.max(0,player.jumpBuffer-dt);
+
+  const left=keys.ArrowLeft||keys.KeyA, right=keys.ArrowRight||keys.KeyD;
+  const jump=pressed.Space||pressed.ArrowUp||pressed.KeyW;
+  const dash=pressed.ShiftLeft||pressed.KeyK;
+
+  if(left){player.vx-=1500*dt;player.facing=-1}
+  if(right){player.vx+=1500*dt;player.facing=1}
+  if(!left&&!right) player.vx*=Math.pow(.0008,dt);
+  player.vx=clamp(player.vx,-285,285);
+
+  if((jump||player.jumpBuffer>0) && (player.ground||player.coyote>0)){
+    player.vy=-610; player.ground=false; player.coyote=0; player.jumpBuffer=0;
+    spawn(player.x+player.w/2,player.y+player.h,7,"jump");
+  }
+  if(!keys.Space&&!keys.ArrowUp&&!keys.KeyW && player.vy<-230) player.vy+=1050*dt;
+
+  if(dash&&player.canDash){
+    player.vx=player.facing*620; player.vy*=.35; player.canDash=false; spawn(player.x+19,player.y+35,14,"spark");
+  }
+  player.vy+=1450*dt;
+  player.vy=clamp(player.vy,-900,900);
+
+  const oldY=player.y;
+  player.x+=player.vx*dt;
+  resolveHorizontal();
+  player.y+=player.vy*dt;
+  player.ground=false;
+  resolveVertical(oldY);
+
+  // Springs
+  for(const s of level.springs){
+    const hit={x:s.x,y:s.y,w:s.w,h:s.h};
+    if(overlap(player,hit)&&player.vy>=0){
+      player.y=s.y-player.h;player.vy=-850;player.ground=false;s.pulse=.2;
+      spawn(s.x+21,s.y,8,"spark");
+    }
+    s.pulse=Math.max(0,s.pulse-dt);
+  }
+
+  // Crates
+  for(const c of level.crates){
+    if(!c.hit && overlap(player,c) && player.vy<0 && player.y+player.h>c.y){
+      c.hit=true;player.vy=-300;score+=100;spawn(c.x+22,c.y,12,"coin");
+    }
+  }
+
+  // Coins
+  for(const c of level.coins){
+    if(!c.got && overlap(player,{x:c.x-c.r,y:c.y-c.r,w:c.r*2,h:c.r*2})){
+      c.got=true;coins++;score+=25;spawn(c.x,c.y,8,"coin");
+    }
+    c.t+=dt*3;
+  }
+
+  // Enemies
+  for(const e of level.enemies){
+    if(!e.alive) continue;
+    e.phase+=dt;
+    e.x+=e.dir*e.speed*dt;
+    // Reverse on nearby platform edges.
+    const support=level.platforms.find(p=>e.x+e.w*.5>p.x&&e.x+e.w*.5<p.x+p.w&&Math.abs((p.y)-e.groundY)<70);
+    if(!support || e.x<support.x || e.x+e.w>support.x+support.w) e.dir*=-1;
+    if(overlap(player,e)){
+      if(player.vy>120 && player.y+player.h-e.y<22){
+        e.alive=false;player.vy=-470;score+=150;spawn(e.x+19,e.y,14,"hit");
+      } else damage();
+    }
+  }
+
+  // Checkpoints
+  for(const cp of level.checkpoints){
+    if(!cp.active && player.x>cp.x){cp.active=true;player.spawnX=cp.x;player.spawnY=525;score+=200;banner={text:"CHECKPOINT",sub:"Your path is safe",time:1.2};spawn(cp.x,cp.y,12,"spark")}
+  }
+
+  // Goal: a real endpoint, not an arbitrary x threshold.
+  const gate={x:level.goal.x,y:level.goal.y,w:level.goal.w,h:level.goal.h};
+  if(player.x+player.w>gate.x && player.x<gate.x+gate.w && player.y+player.h>gate.y+120){
+    spawn(player.x+20,player.y+30,30,"spark"); score+=1000; finish();
+  }
+
+  if(player.y>820) damage();
+
+  // Camera follows smoothly; no constant object shaking.
+  const targetX=clamp(player.x-W*.36,0,level.width-W);
+  const targetY=clamp(player.y-H*.48,0,0);
+  camera.x=lerp(camera.x,targetX,1-Math.pow(.001,dt));
+  camera.y=targetY;
+
+  if(Math.abs(player.vx)>20) player.anim+=dt*(7+Math.abs(player.vx)/80); else player.anim+=dt*2;
+  for(const p of particles){p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=300*dt;p.life-=dt}
+  particles=particles.filter(p=>p.life>0);
+  for(const m of motes){m.p+=dt*m.speed}
+  shake=Math.max(0,shake-dt);
+  for(const k in pressed) delete pressed[k];
+}
+
+function resolveHorizontal(){
+  for(const p of level.platforms){
+    if(!overlap(player,p)) continue;
+    if(player.vx>0) player.x=p.x-player.w;
+    else if(player.vx<0) player.x=p.x+p.w;
+    player.vx=0;
+  }
+}
+function resolveVertical(oldY){
+  for(const p of level.platforms){
+    if(!overlap(player,p)) continue;
+    const wasAbove=oldY+player.h<=p.y+8;
+    if(player.vy>=0&&wasAbove){
+      player.y=p.y-player.h;player.vy=0;player.ground=true;player.canDash=true;
+    } else if(player.vy<0 && oldY>=p.y+p.h-4){
+      player.y=p.y+p.h;player.vy=0;
+    }
+  }
+}
+
+function rounded(x,y,w,h,r){
+  ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.fill();
+}
+
+function drawBackground(){
+  const t=worlds[world];
+  const g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,t.sky[0]);g.addColorStop(1,t.sky[1]);ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+
+  // Distant layered mountains / giant roots.
+  for(let layer=0;layer<3;layer++){
+    ctx.globalAlpha=.25+.12*layer;
+    ctx.fillStyle=layer===0?t.mist:"#071d25";
+    ctx.beginPath();ctx.moveTo(0,H*.64);
+    for(let x=-100;x<W+200;x+=180){
+      const y=H*(.45+layer*.06)+Math.sin((x+camera.x*(.08+layer*.06))*.006)*55;
+      ctx.lineTo(x,y);ctx.lineTo(x+90,y-75-layer*20);ctx.lineTo(x+180,y);
+    }
+    ctx.lineTo(W,H);ctx.lineTo(0,H);ctx.closePath();ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  // Huge enchanted trees in the back layer.
+  ctx.save();ctx.translate(-(camera.x*.16),0);
+  for(let i=-2;i<18;i++){
+    const x=i*210+90, h=170+(i%4)*28;
+    ctx.fillStyle="#102b2b";ctx.fillRect(x,450-h*.2,42,h);
+    ctx.fillStyle="#173e36";
+    for(let k=0;k<5;k++){
+      ctx.beginPath();ctx.arc(x+21+Math.sin(k*2)*35,430-h*.2-k*20,70-k*7,0,TAU);ctx.fill();
+    }
+  }
+  ctx.restore();
+
+  // Moon/sun glow.
+  ctx.globalAlpha=.8;
+  ctx.fillStyle=t.accent;ctx.beginPath();ctx.arc(1060,115,52,0,TAU);ctx.fill();
+  ctx.globalAlpha=.15;ctx.beginPath();ctx.arc(1060,115,92,0,TAU);ctx.fill();ctx.globalAlpha=1;
+
+  // Mist bands create the "enchanted world" transition.
+  ctx.globalAlpha=.10;
+  ctx.fillStyle=t.mist;
+  for(let y=360;y<610;y+=90){ctx.fillRect(0,y,W,22)}
+  ctx.globalAlpha=1;
+}
+
+function drawTrees(){
+  ctx.save();ctx.translate(-camera.x,-camera.y);
+  for(const tr of level.trees){
+    // Back trunk
+    ctx.fillStyle="#2a241f";rounded(tr.x,tr.y-tr.h,tr.s*28,tr.h,10);
+    ctx.fillStyle="#355b42";
+    for(let n=0;n<5;n++){
+      ctx.beginPath();
+      ctx.arc(tr.x+14*tr.s+Math.sin(n*2.1+tr.p)*25,tr.y-tr.h+35+n*24,52*tr.s,0,TAU);
+      ctx.fill();
+    }
+    ctx.fillStyle=worlds[world].accent;
+    for(let n=0;n<3;n++){
+      ctx.globalAlpha=.25;
+      ctx.beginPath();ctx.arc(tr.x+14*tr.s+Math.sin(n*3+tr.p)*24,tr.y-tr.h+50+n*30,7,0,TAU);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  }
+  ctx.restore();
+}
+
+function drawPlatforms(){
+  ctx.save();ctx.translate(-camera.x,-camera.y);
+  for(const p of level.platforms){
+    ctx.fillStyle=p.kind==="ground"?worlds[world].ground:"#354d46";
+    rounded(p.x,p.y,p.w,p.h,7);
+    ctx.fillStyle=worlds[world].top;
+    rounded(p.x,p.y,p.w,10,5);
+    // Subtle texture: stones/moss flecks are fixed to world coordinates.
+    ctx.globalAlpha=.25;
+    for(let x=p.x+12;x<p.x+p.w-8;x+=28){
+      const yy=p.y+20+((Math.floor(x)*13)%35);
+      ctx.fillStyle=(x%56<28)?"#b3c58a":"#192c2a";
+      ctx.fillRect(x,Math.min(yy,p.y+p.h-5),5,3);
+    }
+    ctx.globalAlpha=1;
+  }
+  ctx.restore();
+}
+
+function drawGoal(){
+  ctx.save();ctx.translate(-camera.x,-camera.y);
+  const x=level.goal.x;
+  // Stone arch + magical doorway. This is the actual endpoint.
+  ctx.fillStyle="#30243b";rounded(x,250,90,375,20);
+  ctx.fillStyle=worlds[world].accent;rounded(x+14,285,62,340,25);
+  ctx.fillStyle="#152038";rounded(x+22,302,46,323,20);
+  for(let i=0;i<12;i++){
+    ctx.fillStyle=worlds[world].accent;ctx.globalAlpha=.5;
+    ctx.beginPath();ctx.arc(x+45+Math.sin(i*2.4)*25,310+i*25,3+i%2,0,TAU);ctx.fill();
+  }
+  ctx.globalAlpha=1;
+  ctx.fillStyle="#fff";ctx.font="700 18px system-ui";ctx.textAlign="center";ctx.fillText("END",x+45,645);
+  ctx.restore();
+}
+
+function drawCoins(){
+  ctx.save();ctx.translate(-camera.x,-camera.y);
+  for(const c of level.coins){
+    if(c.got)continue;
+    const squash=.45+.55*Math.abs(Math.cos(c.t));
+    ctx.save();ctx.translate(c.x,c.y);ctx.scale(squash,1);
+    ctx.fillStyle="#ffd75a";ctx.beginPath();ctx.arc(0,0,c.r,0,TAU);ctx.fill();
+    ctx.strokeStyle="#fff0a0";ctx.lineWidth=2;ctx.stroke();
+    ctx.fillStyle="#fff";ctx.globalAlpha=.7;ctx.beginPath();ctx.arc(-3,-3,2,0,TAU);ctx.fill();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawEnemies(){
+  ctx.save();ctx.translate(-camera.x,-camera.y);
+  for(const e of level.enemies){
+    if(!e.alive)continue;
+    const bob=Math.sin(e.phase*5)*2;
+    ctx.save();ctx.translate(e.x,e.y+bob);
+    ctx.fillStyle="#6e4358";rounded(0,10,38,28,12);
+    ctx.fillStyle="#e9b4c9";ctx.beginPath();ctx.arc(10,17,5,0,TAU);ctx.arc(28,17,5,0,TAU);ctx.fill();
+    ctx.fillStyle="#17151c";ctx.beginPath();ctx.arc(10,17,2,0,TAU);ctx.arc(28,17,2,0,TAU);ctx.fill();
+    ctx.fillStyle="#3d293a";rounded(5,33,10,6,3);rounded(23,33,10,6,3);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawPlayer(){
+  ctx.save();ctx.translate(-camera.x,-camera.y);
+  const p=player;
+  ctx.translate(p.x+p.w/2,p.y+p.h);
+  ctx.scale(p.facing,1);
+  const speed=Math.abs(p.vx);
+  const run=Math.min(1,speed/250);
+  const leg=Math.sin(p.anim*1.7)*9*run;
+  const arm=Math.sin(p.anim*1.7+Math.PI)*7*run;
+  const air=!p.ground;
+  ctx.globalAlpha=p.inv>0 && Math.floor(p.inv*12)%2===0 ? .35:1;
+
+  // Shadow
+  ctx.globalAlpha*=.22;ctx.fillStyle="#071016";ctx.beginPath();ctx.ellipse(0,4,22,6,0,0,TAU);ctx.fill();ctx.globalAlpha=p.inv>0&&Math.floor(p.inv*12)%2===0?.35:1;
+
+  // Legs
+  ctx.strokeStyle="#1c2432";ctx.lineWidth=11;ctx.lineCap="round";
+  ctx.beginPath();ctx.moveTo(-7,-4);ctx.lineTo(-10+leg,-28);ctx.moveTo(7,-4);ctx.lineTo(10-leg,-28);ctx.stroke();
+  // Shoes
+  ctx.strokeStyle="#111820";ctx.lineWidth=10;ctx.beginPath();ctx.moveTo(-10+leg,-28);ctx.lineTo(-20+leg,-25);ctx.moveTo(10-leg,-28);ctx.lineTo(20-leg,-25);ctx.stroke();
+  // Torso
+  ctx.fillStyle="#28785f";rounded(-17,-67,34,43,11);
+  // Backpack/scarf detail
+  ctx.fillStyle="#b7d9b2";rounded(-15,-58,8,21,4);
+  // Arms
+  ctx.strokeStyle="#b87552";ctx.lineWidth=10;
+  ctx.beginPath();ctx.moveTo(-15,-57);ctx.lineTo(-23-arm,-36);ctx.moveTo(15,-57);ctx.lineTo(23+arm,-36);ctx.stroke();
+  // Neck + head
+  ctx.fillStyle="#b87552";rounded(-7,-78,14,14,5);
+  ctx.fillStyle="#c7865d";ctx.beginPath();ctx.arc(0,-93,20,0,TAU);ctx.fill();
+  // Hair
+  ctx.fillStyle="#201a19";ctx.beginPath();ctx.arc(0,-101,21,Math.PI,TAU);ctx.fill();
+  ctx.fillRect(-20,-101,40,11);
+  // Hair curls/texture
+  for(let i=-2;i<=2;i++){ctx.beginPath();ctx.arc(i*7,-108-Math.abs(i)*2,7,0,TAU);ctx.fill()}
+  // Ear
+  ctx.fillStyle="#b87552";ctx.beginPath();ctx.arc(19,-94,5,0,TAU);ctx.fill();
+  // Face
+  ctx.fillStyle="#17202a";ctx.beginPath();ctx.arc(7,-95,2.3,0,TAU);ctx.fill();
+  ctx.strokeStyle="#6e3e31";ctx.lineWidth=2;ctx.beginPath();ctx.arc(7,-87,6,.1,1.2);ctx.stroke();
+  // Belt
+  ctx.strokeStyle="#d6b04c";ctx.lineWidth=5;ctx.beginPath();ctx.moveTo(-16,-31);ctx.lineTo(16,-31);ctx.stroke();
+  ctx.globalAlpha=1;
+  ctx.restore();
+}
+
+function drawMarie(){
+  // Marie is an original princess character, not a copy of an existing character.
+  const x=4850,y=535;
+  ctx.save();ctx.translate(-camera.x,-camera.y);
+  const wave=Math.sin(performance.now()/450)*2;
+  ctx.translate(x,y+wave);
+  // shadow
+  ctx.fillStyle="#10111a";ctx.globalAlpha=.2;ctx.beginPath();ctx.ellipse(0,5,30,7,0,0,TAU);ctx.fill();ctx.globalAlpha=1;
+  // dress
+  ctx.fillStyle="#e78fba";ctx.beginPath();ctx.moveTo(-25,-8);ctx.quadraticCurveTo(0,-28,25,-8);ctx.lineTo(34,42);ctx.lineTo(-34,42);ctx.closePath();ctx.fill();
+  ctx.fillStyle="#ffd7ec";ctx.beginPath();ctx.moveTo(-12,-7);ctx.lineTo(12,-7);ctx.lineTo(20,38);ctx.lineTo(-20,38);ctx.closePath();ctx.fill();
+  // arms
+  ctx.strokeStyle="#d09572";ctx.lineWidth=9;ctx.lineCap="round";ctx.beginPath();ctx.moveTo(-17,0);ctx.lineTo(-29,17);ctx.moveTo(17,0);ctx.lineTo(29,-5);ctx.stroke();
+  // legs
+  ctx.strokeStyle="#d09572";ctx.lineWidth=8;ctx.beginPath();ctx.moveTo(-9,40);ctx.lineTo(-11,55);ctx.moveTo(9,40);ctx.lineTo(11,55);ctx.stroke();
+  // shoes
+  ctx.strokeStyle="#6f405d";ctx.lineWidth=8;ctx.beginPath();ctx.moveTo(-11,55);ctx.lineTo(-18,55);ctx.moveTo(11,55);ctx.lineTo(18,55);ctx.stroke();
+  // head
+  ctx.fillStyle="#d79a79";ctx.beginPath();ctx.arc(0,-31,18,0,TAU);ctx.fill();
+  // long dark hair
+  ctx.fillStyle="#171822";ctx.beginPath();ctx.arc(0,-37,22,Math.PI,TAU);ctx.fill();rounded(-22,-39,10,40,6);rounded(12,-39,10,40,6);
+  // bangs
+  ctx.beginPath();ctx.moveTo(-18,-39);ctx.quadraticCurveTo(0,-24,18,-39);ctx.lineTo(14,-48);ctx.quadraticCurveTo(0,-42,-14,-48);ctx.closePath();ctx.fill();
+  // eyes
+  ctx.fillStyle="#25202b";ctx.beginPath();ctx.arc(-6,-32,2,0,TAU);ctx.arc(6,-32,2,0,TAU);ctx.fill();
+  // smile
+  ctx.strokeStyle="#8e4c60";ctx.lineWidth=2;ctx.beginPath();ctx.arc(0,-26,5,.2,1.3);ctx.stroke();
+  // tiny crown
+  ctx.fillStyle="#f7d56b";ctx.beginPath();ctx.moveTo(-10,-52);ctx.lineTo(-7,-62);ctx.lineTo(0,-54);ctx.lineTo(7,-63);ctx.lineTo(10,-52);ctx.closePath();ctx.fill();
+  ctx.restore();
+}
+
+function drawSprings(){
+  ctx.save();ctx.translate(-camera.x,-camera.y);
+  for(const s of level.springs){
+    const h=22+s.pulse*18;
+    ctx.fillStyle="#543a68";rounded(s.x,s.y-h+22,s.w,h,6);
+    ctx.fillStyle=worlds[world].accent;ctx.fillRect(s.x+7,s.y-h+8,s.w-14,5);
+  }
+  for(const c of level.crates){
+    ctx.fillStyle=c.hit?"#56403c":"#8a6746";rounded(c.x,c.y,c.w,c.h,5);
+    if(!c.hit){ctx.strokeStyle="#d2a16b";ctx.lineWidth=4;ctx.strokeRect(c.x+6,c.y+6,c.w-12,c.h-12);ctx.fillStyle="#ffe0a0";ctx.font="700 22px system-ui";ctx.textAlign="center";ctx.fillText("+",c.x+22,c.y+30)}
+  }
+  ctx.restore();
+}
+
+function drawParticles(){
+  ctx.save();ctx.translate(-camera.x,-camera.y);
+  for(const p of particles){
+    ctx.globalAlpha=clamp(p.life/p.max,0,1);
+    ctx.fillStyle=p.kind==="coin"?"#ffe18a":p.kind==="hit"?"#ff9a8a":worlds[world].accent;
+    ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,TAU);ctx.fill();
+  }
+  ctx.globalAlpha=1;ctx.restore();
+}
+
+function drawFireflies(){
+  ctx.save();ctx.translate(-camera.x*.65,0);
+  for(let i=0;i<75;i++){
+    const x=(i*173+Math.sin(i*9.7)*80)%level.width;
+    const y=180+(i*71)%390+Math.sin(performance.now()/900+i)*15;
+    const a=.35+.35*Math.sin(performance.now()/500+i);
+    ctx.globalAlpha=Math.max(.05,a);ctx.fillStyle=worlds[world].accent;
+    ctx.beginPath();ctx.arc(x,y,2.2,0,TAU);ctx.fill();
+  }
+  ctx.globalAlpha=1;ctx.restore();
+}
+
+function drawHUD(){
+  if(state==="menu")return;
+  ctx.fillStyle="#07131dcc";rounded(22,18,370,76,18);
+  ctx.fillStyle="#fff";ctx.font="700 19px system-ui";ctx.textAlign="left";
+  ctx.fillText(worlds[world].name,42,47);
+  ctx.font="500 14px system-ui";ctx.fillStyle="#c8d6d4";ctx.fillText(`WORLD ${world+1}/10  •  ♥ ${lives}  •  ✦ ${coins}`,42,71);
+  // Progress toward actual ending point.
+  ctx.fillStyle="#ffffff22";rounded(W-300,24,250,10,5);
+  ctx.fillStyle=worlds[world].accent;rounded(W-300,24,250*clamp(player.x/level.goal.x,0,1),10,5);
+  ctx.fillStyle="#eaf8f4";ctx.font="600 12px system-ui";ctx.textAlign="right";ctx.fillText("PATH",W-50,55);
+}
+
+function overlay(title,sub,button){
+  ctx.fillStyle="#07131bbd";ctx.fillRect(0,0,W,H);
+  ctx.textAlign="center";
+  ctx.fillStyle="#fff";ctx.font="900 58px system-ui";ctx.fillText(title,W/2,250);
+  ctx.fillStyle="#cfe8df";ctx.font="500 20px system-ui";ctx.fillText(sub,W/2,295);
+  ctx.fillStyle=worlds[world].accent;rounded(W/2-130,345,260,66,20);
+  ctx.fillStyle="#13212a";ctx.font="800 20px system-ui";ctx.fillText(button,W/2,387);
+}
+
+function drawMenu(){
+  drawBackground();
+  // Giant enchanted gateway
+  ctx.fillStyle="#172d2c";rounded(420,150,440,390,48);
+  ctx.fillStyle="#2e5b4a";rounded(455,185,370,355,42);
+  ctx.fillStyle="#0b1d27";rounded(500,235,280,305,110);
+  ctx.fillStyle="#d8ffb0";ctx.globalAlpha=.35;ctx.beginPath();ctx.arc(640,350,135,0,TAU);ctx.fill();ctx.globalAlpha=1;
+  drawMariePreview();
+  ctx.textAlign="center";ctx.fillStyle="#fff";ctx.font="900 62px system-ui";ctx.fillText("MARIE’S",640,100);
+  ctx.fillStyle="#f3d7ff";ctx.font="900 70px system-ui";ctx.fillText("ENCHANTED ADVENTURE",640,665);
+  ctx.fillStyle="#d5eee5";ctx.font="500 18px system-ui";ctx.fillText("An original fantasy platform adventure",640,695);
+  ctx.fillStyle="#fff";ctx.globalAlpha=.8;ctx.font="600 16px system-ui";ctx.fillText("ENTER / TAP START",640,145);ctx.globalAlpha=1;
+  // floating particles
+  for(let i=0;i<35;i++){
+    const x=(i*91+performance.now()*.015*(i%3+1))%W,y=120+(i*67)%520;
+    ctx.fillStyle=worlds[0].accent;ctx.globalAlpha=.3+.3*Math.sin(performance.now()/600+i);ctx.beginPath();ctx.arc(x,y,2+(i%3),0,TAU);ctx.fill();
+  }
+  ctx.globalAlpha=1;
+}
+function drawMariePreview(){
+  ctx.save();ctx.translate(640,500);
+  ctx.scale(1.8,1.8);
+  ctx.fillStyle="#e78fba";ctx.beginPath();ctx.moveTo(-25,-8);ctx.quadraticCurveTo(0,-28,25,-8);ctx.lineTo(34,42);ctx.lineTo(-34,42);ctx.closePath();ctx.fill();
+  ctx.fillStyle="#d79a79";ctx.beginPath();ctx.arc(0,-31,18,0,TAU);ctx.fill();
+  ctx.fillStyle="#171822";ctx.beginPath();ctx.arc(0,-37,22,Math.PI,TAU);ctx.fill();rounded(-22,-39,10,40,6);rounded(12,-39,10,40,6);
+  ctx.fillStyle="#f7d56b";ctx.beginPath();ctx.moveTo(-10,-52);ctx.lineTo(-7,-62);ctx.lineTo(0,-54);ctx.lineTo(7,-63);ctx.lineTo(10,-52);ctx.closePath();ctx.fill();
+  ctx.restore();
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  if(state==="menu"){drawMenu();return}
+  drawBackground();
+  drawFireflies();
+  drawTrees();
+  drawPlatforms();
+  drawGoal();
+  drawCoins();
+  drawSprings();
+  drawEnemies();
+  drawMarie();
+  drawParticles();
+  drawPlayer();
+  drawHUD();
+
+  if(banner.time>0){
+    ctx.globalAlpha=clamp(banner.time<.4?banner.time/.4:1,0,1);
+    ctx.textAlign="center";ctx.fillStyle="#07131dcc";rounded(W/2-190,88,380,82,22);
+    ctx.fillStyle="#fff";ctx.font="900 28px system-ui";ctx.fillText(banner.text,W/2,121);
+    ctx.fillStyle="#cfe8df";ctx.font="500 14px system-ui";ctx.fillText(banner.sub,W/2,147);
+    ctx.globalAlpha=1;
+  }
+
+  if(state==="pause") overlay("PAUSED","Take a breath. The forest is waiting.","ESC TO RESUME");
+  if(state==="gameover") overlay("THE FOREST RESET","You ran out of hearts.","ENTER TO RESTART");
+  if(state==="win") overlay("YOU FOUND MARIE","All ten worlds are complete.","ENTER TO PLAY AGAIN");
+}
+
+function loop(t){
+  if(!last)last=t;
+  let dt=Math.min(.05,(t-last)/1000);last=t;
+  accumulator+=dt;
+  const fixed=1/60;
+  while(accumulator>=fixed){
+    update(fixed);accumulator-=fixed;
+  }
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+addEventListener("pointerdown",()=>{
+  if(state==="menu")startGame();
+  else if(state==="gameover"||state==="win")startGame();
+},{passive:true});
+</script>
+</body>
+</html>
